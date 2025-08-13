@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Miro Coordinates HUD</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Miro Web SDK v2 -->
+  <script src="https://miro.com/app/static/sdk/v2/miro.js"></script>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 0; }
+    .wrap { padding: 12px 14px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #e5e7eb; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .muted { color: #6b7280; }
+    .grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; }
+    .h { font-weight: 600; margin: 12px 0 6px; }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; cursor: pointer; }
+    button:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="row" style="justify-content: space-between;">
+      <div class="row">
+        <div class="pill mono" id="cursor">cursor: x=?, y=?</div>
+        <div class="pill mono" id="zoom">zoom: ?</div>
+      </div>
+      <button id="pin">Pin / Unpin Panel</button>
+    </div>
+
+    <div class="h">Selection</div>
+    <div class="grid mono">
+      <div class="muted">type</div><div id="stype">—</div>
+      <div class="muted">x</div><div id="sx">—</div>
+      <div class="muted">y</div><div id="sy">—</div>
+      <div class="muted">width</div><div id="sw">—</div>
+      <div class="muted">height</div><div id="sh">—</div>
+      <div class="muted">id</div><div id="sid">—</div>
+    </div>
+  </div>
+
+  <script>
+    // Utility: screen -> board coords using viewport state
+    function screenToBoard(vp, clientX, clientY) {
+      // vp.x / vp.y = viewport center in board coords, vp.zoom = pixels per board unit
+      const cx = window.innerWidth / 2;
+      const cy = window.innerHeight / 2;
+      const bx = vp.x + (clientX - cx) / vp.zoom;
+      const by = vp.y + (clientY - cy) / vp.zoom;
+      return { x: bx, y: by };
+    }
+
+    async function ensureBottomPanel() {
+      // Open once, then this page *is* the panel content.
+      await miro.board.ui.openBottomPanel({ url: window.location.href, height: 180 });
+    }
+
+    async function init() {
+      await miro.onReady();
+      // If opened from the app icon, (re)open as a bottom panel for a docked feel.
+      try { await ensureBottomPanel(); } catch (e) { /* ignore if already in panel */ }
+
+      const $cursor = document.getElementById('cursor');
+      const $zoom   = document.getElementById('zoom');
+      const $stype  = document.getElementById('stype');
+      const $sx     = document.getElementById('sx');
+      const $sy     = document.getElementById('sy');
+      const $sw     = document.getElementById('sw');
+      const $sh     = document.getElementById('sh');
+      const $sid    = document.getElementById('sid');
+      const $pinBtn = document.getElementById('pin');
+
+      // Cursor tracking
+      let lastVp = await miro.board.viewport.get();
+      $zoom.textContent = `zoom: ${lastVp.zoom.toFixed(2)}`;
+
+      window.addEventListener('mousemove', async (e) => {
+        // Refresh viewport zoom/center occasionally to keep in sync
+        // (cheap — SDK call is fast; throttle via requestAnimationFrame)
+        if (!window.__rafScheduled) {
+          window.__rafScheduled = true;
+          requestAnimationFrame(async () => {
+            window.__rafScheduled = false;
+            lastVp = await miro.board.viewport.get();
+            const { x, y } = screenToBoard(lastVp, e.clientX, e.clientY);
+            $cursor.textContent = `cursor: x=${x.toFixed(1)}, y=${y.toFixed(1)}`;
+            $zoom.textContent = `zoom: ${lastVp.zoom.toFixed(2)}`;
+          });
+        }
+      });
+
+      // Selection tracking (poll, plus event attempt for newer SDKs)
+      async function updateSelection() {
+        try {
+          const items = await miro.board.getSelection();
+          if (items.length) {
+            const it = items[0];
+            // Common fields across most items:
+            const x = ('x' in it) ? it.x : (it.bounds?.x ?? NaN);
+            const y = ('y' in it) ? it.y : (it.bounds?.y ?? NaN);
+            const w = ('width' in it) ? it.width : (it.bounds?.width ?? NaN);
+            const h = ('height' in it) ? it.height : (it.bounds?.height ?? NaN);
+            $stype.textContent = it.type || it.shape || it.kind || 'item';
+            $sx.textContent = isFinite(x) ? x.toFixed(1) : '—';
+            $sy.textContent = isFinite(y) ? y.toFixed(1) : '—';
+            $sw.textContent = isFinite(w) ? w.toFixed(1) : '—';
+            $sh.textContent = isFinite(h) ? h.toFixed(1) : '—';
+            $sid.textContent = it.id || '—';
+          } else {
+            $stype.textContent = '—';
+            $sx.textContent = $sy.textContent = $sw.textContent = $sh.textContent = $sid.textContent = '—';
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      setInterval(updateSelection, 200); // reliable across SDK versions
+      updateSelection();
+
+      // Optional: pin/unpin panel height to keep it visible
+      let pinned = true;
+      $pinBtn.addEventListener('click', async () => {
+        pinned = !pinned;
+        await miro.board.ui.openBottomPanel({ url: window.location.href, height: pinned ? 180 : 0 });
+      });
+
+      // App icon click handler (so clicking the icon toggles the panel)
+      try {
+        miro.board.ui.on('icon:click', async () => {
+          // if closed, reopen
+          await miro.board.ui.openBottomPanel({ url: window.location.href, height: 180 });
+        });
+      } catch (_) {}
+    }
+    init();
+  </script>
+</body>
+</html>
